@@ -1,28 +1,145 @@
-# Tailscale Full Setup
+# ⚡ Tailscale Full Setup
 
-Interactive quick-install and diagnostics toolkit for Linux VPS instances using Tailscale.
+Interactive **quick-install + setup + diagnostics toolkit** for Linux VPS and Windows Server machines using Tailscale.
 
-## Quick install
+## 🚀 Quick Install
+
+### 🐧 Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/install.sh | sudo bash
 ```
 
-The script does **not** contain or store a Tailscale auth key. The key is requested interactively only when an unauthenticated machine is configured as an Exit Node.
+### 🪟 Windows Server
 
-## Menu
+Run **PowerShell as Administrator**:
 
-1. **Install / Update Tailscale** — installs Tailscale only when it is missing and enables `tailscaled`.
-2. **Setup Exit Node** — enables IPv4/IPv6 forwarding, joins the Tailnet when needed, advertises `tag:exit`, and advertises the Exit Node.
-3. **Enable Tailscale SSH** — enables Tailscale SSH on the machine.
-4. **Ping / Direct-DERP Test** — tests Tailnet peers with `tailscale ping`.
-5. **Network Benchmark** — runs `tailscale netcheck`.
-6. **Show Status** — shows peers, Tailscale IPv4/IPv6 addresses and network information.
-7. **Logout / Remove This Device** — disconnects the local machine after an explicit `YES` confirmation.
+```powershell
+irm https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/setup.ps1 | iex
+```
 
-## Exit Node requirements
+If PowerShell execution policy blocks the script:
 
-The Tailnet policy should permit the `tag:exit` tag and automatically approve Exit Nodes/routes. A typical policy uses:
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+Then run the Quick Install command again.
+
+---
+
+## 📋 Features / Menu
+
+Both Linux and Windows versions provide the same overall toolkit:
+
+```text
+  1) Install Tailscale
+  2) Setup Exit Node (IPv4 + IPv6)
+  3) Tailscale SSH
+  4) Direct / DERP Ping
+  5) Network Benchmark (Netcheck)
+  6) Status + Public IP
+  7) Logout / Remove Device
+  8) Exit IP Test
+  9) Exit Node Health Check
+ 10) MTU Test
+ 11) DNS Test
+ 12) Full VPS Benchmark
+ 13) Uninstall Tailscale
+  0) Exit
+```
+
+### ✅ Detailed checklist
+
+- [x] Install Tailscale
+- [x] Avoid unnecessary reinstall when Tailscale is already installed
+- [x] Enable/start the Tailscale service
+- [x] Interactive Auth Key input
+- [x] Auth Key is not stored in the repository
+- [x] Automatically join the Tailnet when required
+- [x] Exit Node setup
+- [x] `tag:exit` advertisement
+- [x] IPv4 forwarding
+- [x] IPv6 forwarding
+- [x] Tailscale SSH
+- [x] Tailnet peer discovery
+- [x] Direct connection detection
+- [x] DERP relay detection
+- [x] Direct/DERP summary
+- [x] `tailscale netcheck`
+- [x] Public IPv4 detection
+- [x] Public IPv6 detection
+- [x] Exit IP test
+- [x] Exit Node health check
+- [x] MTU test
+- [x] DNS test
+- [x] Hostname detection
+- [x] Tailscale IPv4/IPv6 display
+- [x] Full VPS benchmark
+- [x] Logout with confirmation
+- [x] Uninstall with confirmation
+- [x] Linux + Windows Server support
+
+---
+
+## 🧪 What the tests do
+
+### 4 — Direct / DERP Ping
+
+Tests the other Tailnet peers and reports whether the connection is **Direct** or going through a **DERP relay**.
+
+Example:
+
+```text
+GitHub     → DIRECT   37 ms
+Colab      → DERP     106 ms
+VPS-Finland→ DIRECT   42 ms
+
+Summary: 2 Direct / 1 DERP / 3 peers
+```
+
+### 5 — Network Benchmark
+
+Runs Tailscale's `netcheck` to inspect UDP availability, IPv4/IPv6 connectivity, NAT behavior, port mapping and nearest DERP region.
+
+### 6 — Status + Public IP
+
+Shows Tailscale peers, Tailscale IPv4/IPv6 addresses, network information and public IP information.
+
+### 8 — Exit IP Test
+
+Shows the current public IPv4/IPv6 addresses. For an actual Exit Node test, run this on a client while the client is using this machine as its Exit Node.
+
+### 9 — Exit Node Health
+
+Checks the Tailscale service, routing configuration, Tailnet connection and public IP information.
+
+### 10 — MTU Test
+
+Tests packet sizes against a selected Tailscale IPv4 peer using DF/fragmentation checks.
+
+### 11 — DNS Test
+
+Shows configured DNS servers and checks resolution of Tailscale-related domains.
+
+### 12 — Full VPS Benchmark
+
+Runs the major diagnostics together:
+
+```text
+Public IP
+Hostname
+Tailscale IPv4 / IPv6
+Netcheck
+Peer Direct / DERP test
+Exit Node health
+```
+
+---
+
+## 🏷️ Exit Node / ACL setup
+
+For automatic approval of tagged Exit Nodes, the Tailnet policy can use:
 
 ```json
 "tagOwners": {
@@ -37,8 +154,41 @@ The Tailnet policy should permit the `tag:exit` tag and automatically approve Ex
 }
 ```
 
-The Linux host also needs IPv4 and IPv6 forwarding enabled; option 2 configures these automatically.
+The Linux script enables IPv4 and IPv6 forwarding when option **2** is selected. Windows Server uses its own Windows routing configuration.
 
-## Security
+---
 
-Never commit a reusable Tailscale auth key to this repository. If a key is exposed, revoke/rotate it from the Tailscale admin console immediately.
+## 🔐 Security
+
+**Never commit a reusable Tailscale Auth Key to this repository.**
+
+The scripts request the key interactively when a machine needs to join the Tailnet. The key is not written to the repository.
+
+If an Auth Key is ever exposed, revoke/rotate it from the Tailscale admin console immediately.
+
+---
+
+## 📁 Repository structure
+
+```text
+Tailscale-Full-Setup/
+├── install.sh      # Linux
+├── setup.ps1       # Windows Server
+└── README.md       # Documentation
+```
+
+---
+
+## 🔗 Links
+
+- **Repository:** https://github.com/aminsh35322088-ctrl/Tailscale-Full-Setup
+- **Linux Quick Install:**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/install.sh | sudo bash
+  ```
+- **Windows Server Quick Install:**
+  ```powershell
+  irm https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/setup.ps1 | iex
+  ```
+- **Linux script:** https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/install.sh
+- **Windows script:** https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/setup.ps1
