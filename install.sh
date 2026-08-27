@@ -10,22 +10,59 @@ ok(){ echo -e "${GREEN}✓ $*${NC}"; }
 warn(){ echo -e "${YELLOW}! $*${NC}"; }
 fail(){ echo -e "${RED}✗ $*${NC}"; }
 require_root(){ [[ $EUID -eq 0 ]] || { fail "Run as root: sudo bash install.sh"; return 1; }; }
-installed(){ command -v tailscale >/dev/null 2>&1; }
+
+# Resolve Tailscale even when the installer has placed it in /usr/sbin but the
+# current shell has a stale/minimal PATH.
+tailscale_bin(){
+  local p
+  p="$(command -v tailscale 2>/dev/null || true)"
+  if [[ -n "$p" && -x "$p" ]]; then printf '%s\n' "$p"; return 0; fi
+  for p in /usr/bin/tailscale /usr/sbin/tailscale /bin/tailscale /sbin/tailscale; do
+    if [[ -x "$p" ]]; then printf '%s\n' "$p"; return 0; fi
+  done
+  return 1
+}
+installed(){ tailscale_bin >/dev/null 2>&1; }
+TS_BIN=''
+resolve_ts(){ TS_BIN="$(tailscale_bin)"; }
 service_up(){ systemctl enable --now tailscaled >/dev/null 2>&1 || true; }
-connected(){ installed && service_up && [[ -n "$(tailscale ip -4 2>/dev/null || true)$(tailscale ip -6 2>/dev/null || true)" ]]; }
+connected(){
+  installed || return 1
+  resolve_ts || return 1
+  service_up
+  [[ -n "$($TS_BIN ip -4 2>/dev/null || true)$($TS_BIN ip -6 2>/dev/null || true)" ]]
+}
 
 install_ts(){
   require_root || return 1
   if installed; then
+    resolve_ts
     service_up
-    ok "Tailscale already installed: $(tailscale version | head -n1)"
+    ok "Tailscale already installed: $($TS_BIN version | head -n1)"
     return 0
   fi
   command -v curl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 || { fail "curl is required and automatic installation is only supported on apt systems."; return 1; }; apt-get update -y && apt-get install -y curl; }
   info "Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
+
+  # The upstream installer may update package files without updating the
+  # current shell's PATH. Refresh common admin paths and resolve by absolute
+  # path so subsequent commands work immediately in the same menu session.
+  export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+  hash -r 2>/dev/null || true
+
+  if ! installed; then
+    fail "Tailscale installer completed but the tailscale binary was not found."
+    fail "Checked PATH and standard locations: /usr/bin, /usr/sbin, /bin, /sbin."
+    return 1
+  fi
+  resolve_ts
   service_up
-  ok "Tailscale installed: $(tailscale version | head -n1)"
+  if ! "$TS_BIN" version >/dev/null 2>&1; then
+    fail "Tailscale binary was found at $TS_BIN but could not execute."
+    return 1
+  fi
+  ok "Tailscale installed: $($TS_BIN version | head -n1)"
 }
 
 ensure_ts(){
@@ -33,6 +70,7 @@ ensure_ts(){
     warn "Tailscale is not installed. Installing it now..."
     install_ts || return 1
   else
+    resolve_ts
     service_up
   fi
 }
@@ -44,7 +82,7 @@ join_if_needed(){
   read -r -s -p "Tailscale Auth Key: " key
   echo
   [[ -n "$key" ]] || { warn "Auth key is empty."; return 1; }
-  if ! tailscale up --auth-key="$key" --accept-dns=false; then
+  if ! "$TS_BIN" up --auth-key="$key" --accept-dns=false; then
     unset key
     fail "Tailscale join failed. Check the auth key and network connectivity."
     return 1
@@ -69,22 +107,22 @@ setup_exit(){
   ensure_ts || return 1
   setup_forwarding || return 1
   join_if_needed || return 1
-  if ! tailscale set --advertise-exit-node; then
+  if ! "$TS_BIN" set --advertise-exit-node; then
     fail "Could not advertise Exit Node. Check Tailnet ACL/tag permissions."
     return 1
   fi
-  if ! tailscale set --advertise-tags=tag:exit; then
+  if ! "$TS_BIN" set --advertise-tags=tag:exit; then
     fail "Could not apply tag:exit. Check tagOwners/ACL and auth-key permissions."
     return 1
   fi
   ok "Exit Node configured with tag:exit"
-  tailscale status || true
+  "$TS_BIN" status || true
 }
 
 setup_ssh(){
   require_root || return 1
   join_if_needed || return 1
-  if tailscale set --ssh; then ok "Tailscale SSH enabled"; else fail "Could not enable Tailscale SSH"; return 1; fi
+  if "$TS_BIN" set --ssh; then ok "Tailscale SSH enabled"; else fail "Could not enable Tailscale SSH"; return 1; fi
 }
 
 get_peers(){
@@ -92,9 +130,8 @@ get_peers(){
     warn "python3 is required for peer discovery."
     return 0
   fi
-  tailscale status --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); me=set(d.get("Self",{}).get("TailscaleIPs",[]));
-for p in d.get("Peer",{}).values():
- ips=p.get("TailscaleIPs",[]); ip=next((x for x in ips if x.startswith("100.")),None)
+  "$TS_BIN" status --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); me=set(d.get("Self",{}).get("TailscaleIPs",[]));
+for p in d.get("Peer",{}).values(): ips=p.get("TailscaleIPs",[]); ip=next((x for x in ips if x.startswith("100.")),None)
  if ip and ip not in me: print(ip, p.get("HostName") or p.get("DNSName") or "peer")' 2>/dev/null || true
 }
 
@@ -108,7 +145,7 @@ ping_test(){
     echo
     echo "--- $name ($ip) ---"
     local out
-    out="$(tailscale ping --c=3 "$ip" 2>&1 || true)"
+    out="$("$TS_BIN" ping --c=3 "$ip" 2>&1 || true)"
     echo "$out"
     if grep -q 'via DERP' <<<"$out"; then derp=$((derp+1));
     elif grep -Eq 'via [0-9a-fA-F:]+:[0-9]+' <<<"$out"; then direct=$((direct+1));
@@ -119,7 +156,7 @@ ping_test(){
   info "Summary: $direct Direct / $derp DERP / $failed Failed / $count peers"
 }
 
-netcheck(){ join_if_needed || return 1; tailscale netcheck; }
+netcheck(){ join_if_needed || return 1; "$TS_BIN" netcheck; }
 
 public_ip(){
   command -v curl >/dev/null 2>&1 || { warn "curl is required for public IP tests."; return 0; }
@@ -155,8 +192,8 @@ health(){
   systemctl is-active --quiet tailscaled && ok "Tailscale service: active" || warn "Tailscale service: not active"
   [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == "1" ]] && ok "IPv4 forwarding: enabled" || warn "IPv4 forwarding: disabled"
   [[ "$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null)" == "1" ]] && ok "IPv6 forwarding: enabled" || warn "IPv6 forwarding: disabled"
-  if tailscale status >/dev/null 2>&1; then ok "Tailnet connection: active"; else warn "Tailnet connection: unavailable"; fi
-  if tailscale status --json 2>/dev/null | grep -q 'ExitNode' 2>/dev/null; then ok "Exit Node capability advertised (local status)"; else warn "Exit Node capability not confirmed locally"; fi
+  if "$TS_BIN" status >/dev/null 2>&1; then ok "Tailnet connection: active"; else warn "Tailnet connection: unavailable"; fi
+  if "$TS_BIN" status --json 2>/dev/null | grep -q 'ExitNode' 2>/dev/null; then ok "Exit Node capability advertised (local status)"; else warn "Exit Node capability not confirmed locally"; fi
   echo
   public_ip
 }
@@ -186,9 +223,9 @@ dns_test(){
 
 status(){
   join_if_needed || return 1
-  echo; info "=== Tailscale Status ==="; tailscale status || true
-  echo; info "=== Tailscale IPs ==="; tailscale ip -4 2>/dev/null || echo "IPv4: Unavailable"; tailscale ip -6 2>/dev/null || echo "IPv6: Unavailable"
-  echo; info "=== Netcheck ==="; tailscale netcheck 2>/dev/null || true
+  echo; info "=== Tailscale Status ==="; "$TS_BIN" status || true
+  echo; info "=== Tailscale IPs ==="; "$TS_BIN" ip -4 2>/dev/null || echo "IPv4: Unavailable"; "$TS_BIN" ip -6 2>/dev/null || echo "IPv6: Unavailable"
+  echo; info "=== Netcheck ==="; "$TS_BIN" netcheck 2>/dev/null || true
   echo; info "=== Public IP ==="; public_ip
   echo; info "=== Location ==="; location_info
 }
@@ -199,10 +236,10 @@ benchmark(){
   echo "Hostname    : $(hostname)"
   public_ip
   location_info
-  echo "Tailscale IPv4: $(tailscale ip -4 2>/dev/null || echo Unavailable)"
-  echo "Tailscale IPv6: $(tailscale ip -6 2>/dev/null || echo Unavailable)"
+  echo "Tailscale IPv4: $("$TS_BIN" ip -4 2>/dev/null || echo Unavailable)"
+  echo "Tailscale IPv6: $("$TS_BIN" ip -6 2>/dev/null || echo Unavailable)"
   echo
-  info "Network"; tailscale netcheck 2>/dev/null || true
+  info "Network"; "$TS_BIN" netcheck 2>/dev/null || true
   echo; info "Peer connectivity"; ping_test || true
   echo; info "Exit Node health"; health || true
 }
@@ -213,7 +250,7 @@ remove_node(){
   echo; warn "This logs the device out of the Tailnet."
   read -r -p "Type YES to confirm: " confirm
   [[ "$confirm" == "YES" ]] || { echo "Cancelled."; return 0; }
-  tailscale logout || true
+  "$TS_BIN" logout || true
   ok "Device logged out"
 }
 
@@ -222,7 +259,7 @@ uninstall_ts(){
   echo; warn "This removes Tailscale packages and local Exit Node sysctl configuration."
   read -r -p "Type UNINSTALL to confirm: " confirm
   [[ "$confirm" == "UNINSTALL" ]] || { echo "Cancelled."; return 0; }
-  tailscale logout >/dev/null 2>&1 || true
+  "$TS_BIN" logout >/dev/null 2>&1 || true
   if command -v apt-get >/dev/null 2>&1; then apt-get remove -y tailscale || true; elif command -v dnf >/dev/null 2>&1; then dnf remove -y tailscale || true; elif command -v yum >/dev/null 2>&1; then yum remove -y tailscale || true; else warn "Package manager not recognized; package was not removed."; fi
   rm -f /etc/sysctl.d/99-tailscale-exit.conf
   sysctl --system >/dev/null 2>&1 || true
