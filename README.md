@@ -6,9 +6,13 @@ Interactive **quick-install + setup + diagnostics toolkit** for Linux VPS and Wi
 
 ### 🐧 Linux
 
+**Recommended one-line installer:**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/install.sh | sudo bash
 ```
+
+> The installer is interactive and requires root privileges. The command above always downloads the current `main` version of `install.sh`, so you do not need to clone the repository first.
 
 ### 🪟 Windows Server
 
