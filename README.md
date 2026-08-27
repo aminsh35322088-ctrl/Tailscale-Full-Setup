@@ -22,6 +22,8 @@ Run **PowerShell as Administrator**:
 irm https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/setup.ps1 | iex
 ```
 
+The Windows script now refreshes its Tailscale executable path after installation and verifies the installed binary before continuing. It also handles Exit Node tagging through re-authentication instead of trying to use the unsupported `tailscale set --advertise-tags` command.
+
 If PowerShell execution policy blocks the script:
 
 ```powershell
@@ -29,6 +31,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 Then run the Quick Install command again.
+
+> For `tag:exit`, the Auth Key used by the Windows Exit Node setup must be permitted to use that tag in your Tailnet policy. Tailscale tags are part of device identity and cannot be added to an auth-key-authenticated device using `tailscale set`. citeturn0search1turn0search0
 
 ---
 
@@ -56,6 +60,7 @@ Both Linux and Windows versions provide the same overall toolkit:
 ### ✅ Detailed checklist
 
 - [x] Install Tailscale
+- [x] Verify Tailscale installation and executable path
 - [x] Avoid unnecessary reinstall when Tailscale is already installed
 - [x] Enable/start the Tailscale service
 - [x] Interactive Auth Key input
@@ -63,8 +68,10 @@ Both Linux and Windows versions provide the same overall toolkit:
 - [x] Automatically join the Tailnet when required
 - [x] Exit Node setup
 - [x] `tag:exit` advertisement
+- [x] Correct tag-based re-authentication flow for auth-key nodes
 - [x] IPv4 forwarding
-- [x] IPv6 forwarding
+- [x] IPv6 forwarding on Linux
+- [x] Windows IP routing configuration
 - [x] Tailscale SSH
 - [x] Tailnet peer discovery
 - [x] Direct connection detection
@@ -91,16 +98,6 @@ Both Linux and Windows versions provide the same overall toolkit:
 ### 4 — Direct / DERP Ping
 
 Tests the other Tailnet peers and reports whether the connection is **Direct** or going through a **DERP relay**.
-
-Example:
-
-```text
-GitHub     → DIRECT   37 ms
-Colab      → DERP     106 ms
-VPS-Finland→ DIRECT   42 ms
-
-Summary: 2 Direct / 1 DERP / 3 peers
-```
 
 ### 5 — Network Benchmark
 
@@ -158,7 +155,15 @@ For automatic approval of tagged Exit Nodes, the Tailnet policy can use:
 }
 ```
 
-The Linux script enables IPv4 and IPv6 forwarding when option **2** is selected. Windows Server uses its own Windows routing configuration.
+The Linux script enables IPv4 and IPv6 forwarding when option **2** is selected. Windows Server uses the Windows `IPEnableRouter` setting for routing. Tailscale recommends using `tailscale up --advertise-tags=...`/re-authentication for tag identity; tags require appropriate tag ownership or an auth key that is authorized for the tag. citeturn0search1turn0search0
+
+For Windows Server deployments that must keep Tailscale available when no interactive user is logged in, enable Tailscale **Run Unattended** mode with:
+
+```powershell
+tailscale up --unattended=true
+```
+
+This is specifically supported for Windows Server scenarios. citeturn0search6
 
 ---
 
