@@ -11,8 +11,6 @@ warn(){ echo -e "${YELLOW}! $*${NC}"; }
 fail(){ echo -e "${RED}✗ $*${NC}"; }
 require_root(){ [[ $EUID -eq 0 ]] || { fail "Run as root: sudo bash install.sh"; return 1; }; }
 
-# Resolve Tailscale even when the installer has placed it in /usr/sbin but the
-# current shell has a stale/minimal PATH.
 tailscale_bin(){
   local p
   p="$(command -v tailscale 2>/dev/null || true)"
@@ -44,13 +42,8 @@ install_ts(){
   command -v curl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 || { fail "curl is required and automatic installation is only supported on apt systems."; return 1; }; apt-get update -y && apt-get install -y curl; }
   info "Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
-
-  # The upstream installer may update package files without updating the
-  # current shell's PATH. Refresh common admin paths and resolve by absolute
-  # path so subsequent commands work immediately in the same menu session.
   export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
   hash -r 2>/dev/null || true
-
   if ! installed; then
     fail "Tailscale installer completed but the tailscale binary was not found."
     fail "Checked PATH and standard locations: /usr/bin, /usr/sbin, /bin, /sbin."
@@ -107,12 +100,29 @@ setup_exit(){
   ensure_ts || return 1
   setup_forwarding || return 1
   join_if_needed || return 1
+
+  # `tailscale set` supports Exit Node advertisement, but `--advertise-tags`
+  # is a `tailscale up` flag. Do not pass the unsupported flag to `set`.
   if ! "$TS_BIN" set --advertise-exit-node; then
     fail "Could not advertise Exit Node. Check Tailnet ACL/tag permissions."
     return 1
   fi
-  if ! "$TS_BIN" set --advertise-tags=tag:exit; then
-    fail "Could not apply tag:exit. Check tagOwners/ACL and auth-key permissions."
+
+  # Apply the tag using `tailscale up`, which is the supported command for
+  # advertise-tags. Preserve the existing DNS preference. If this fails,
+  # report the actual error instead of claiming that the Exit Node is ready.
+  if ! "$TS_BIN" up --advertise-exit-node --advertise-tags=tag:exit --accept-dns=false; then
+    fail "Exit Node advertisement succeeded, but applying tag:exit failed."
+    warn "The installed Tailscale version supports --advertise-tags only through 'tailscale up'."
+    warn "Run: tailscale up --advertise-exit-node --advertise-tags=tag:exit --accept-dns=false"
+    return 1
+  fi
+
+  # Verify both the local advertised state and the tag after configuration.
+  local state
+  state="$("$TS_BIN" status --json 2>/dev/null || true)"
+  if ! grep -q 'tag:exit' <<<"$state"; then
+    fail "tag:exit was requested but is not visible in local Tailscale state."
     return 1
   fi
   ok "Exit Node configured with tag:exit"
