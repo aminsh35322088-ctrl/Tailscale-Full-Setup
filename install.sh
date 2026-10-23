@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# The installer is commonly launched as: curl ... | sudo bash.
+# In that case stdin contains the script itself, so menu read commands
+# would consume script bytes and report "unknown command". Use the user's
+# terminal for interactive prompts instead.
+if [[ ! -t 0 ]]; then
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    exec </dev/tty
+  else
+    printf '%s\n' 'This installer needs an interactive terminal. Run it from a terminal session.' >&2
+    exit 1
+  fi
+fi
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info(){ echo -e "${CYAN}$*${NC}"; }
 ok(){ echo -e "${GREEN}✓ $*${NC}"; }
