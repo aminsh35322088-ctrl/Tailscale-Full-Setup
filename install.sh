@@ -2,18 +2,18 @@
 set -Eeuo pipefail
 
 # The installer is commonly launched as: curl ... | sudo bash.
-# In that case stdin contains the script itself, so menu read commands
-# would consume script bytes and report "unknown command". Use the user's
-# terminal for interactive prompts instead.
+# Do not replace stdin: Bash may still be reading this script from the pipe.
+# Keep interactive input on a separate file descriptor instead.
+INPUT_FD=0
 if [[ ! -t 0 ]]; then
   if [[ -r /dev/tty && -w /dev/tty ]]; then
-    exec </dev/tty
+    exec 3<>/dev/tty
+    INPUT_FD=3
   else
     printf '%s\n' 'This installer needs an interactive terminal. Run it from a terminal session.' >&2
     exit 1
   fi
 fi
-
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info(){ echo -e "${CYAN}$*${NC}"; }
 ok(){ echo -e "${GREEN}✓ $*${NC}"; }
@@ -33,7 +33,25 @@ tailscale_bin(){
 installed(){ tailscale_bin >/dev/null 2>&1; }
 TS_BIN=''
 resolve_ts(){ TS_BIN="$(tailscale_bin)"; }
-service_up(){ systemctl enable --now tailscaled >/dev/null 2>&1 || true; }
+service_up(){
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl enable --now tailscaled; then
+      return 0
+    fi
+    fail "Could not start tailscaled with systemd."
+    systemctl status tailscaled --no-pager -l || true
+    return 1
+  fi
+  if command -v service >/dev/null 2>&1; then
+    if service tailscaled start; then
+      return 0
+    fi
+    fail "Could not start tailscaled with the service command."
+    return 1
+  fi
+  fail "No supported service manager was found for tailscaled."
+  return 1
+}
 connected(){
   installed || return 1
   resolve_ts || return 1
@@ -77,7 +95,7 @@ set_hostname(){
   echo
   info "Tailscale device name is separate from the VPS provider hostname."
   echo "Current VPS hostname: ${current:-unknown}"
-  read -r -p "Tailscale hostname [${default_name}]: " requested
+  read -r -u "$INPUT_FD" -p "Tailscale hostname [${default_name}]: " requested
   requested="${requested:-$default_name}"
   name="$(clean_hostname "$requested")"
   if "$TS_BIN" set --hostname="$name"; then
@@ -92,7 +110,7 @@ join_if_needed(){
   ensure_ts || return 1
   if connected; then return 0; fi
   echo
-  read -r -s -p "Tailscale Auth Key: " key; echo
+  read -r -s -u "$INPUT_FD" -p "Tailscale Auth Key: " key; echo
   [[ -n "$key" ]] || { warn "Auth key is empty."; return 1; }
   if ! "$TS_BIN" up --auth-key="$key" --accept-dns=false; then unset key; fail "Tailscale join failed. Check the auth key and network connectivity."; return 1; fi
   unset key
@@ -114,7 +132,7 @@ EOF
 has_exit_tag(){ "$TS_BIN" status --json 2>/dev/null | grep -q 'tag:exit'; }
 apply_exit_tag(){
   echo
-  read -r -s -p "Tailscale Auth Key (required to apply tag:exit): " key; echo
+  read -r -s -u "$INPUT_FD" -p "Tailscale Auth Key (required to apply tag:exit): " key; echo
   [[ -n "$key" ]] || { warn "Auth key is empty."; return 1; }
   "$TS_BIN" logout >/dev/null 2>&1 || true
   if ! "$TS_BIN" up --auth-key="$key" --advertise-tags=tag:exit --advertise-exit-node --accept-dns=false; then unset key; fail "Could not authenticate with tag:exit and advertise the Exit Node."; fail "Make sure the auth key is allowed to use tag:exit and tagOwners permits it."; return 1; fi
@@ -141,12 +159,67 @@ public_ip(){ command -v curl >/dev/null 2>&1 || { warn "curl is required for pub
 location_info(){ command -v curl >/dev/null 2>&1 || return 0; local json country city region; json="$(curl -4 -fsS --max-time 5 https://ipinfo.io/json 2>/dev/null || true)"; if [[ -n "$json" ]] && command -v python3 >/dev/null 2>&1; then read -r country region city < <(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("country","-"),d.get("region","-"),d.get("city","-"))' 2>/dev/null || true); echo "Location    : ${city:--}, ${region:--}, ${country:--}"; else echo "Location    : Unavailable"; fi; }
 exit_ip_test(){ ensure_ts || return 1; public_ip; }
 health(){ join_if_needed || return 1; echo; info "=== Exit Node Health ==="; systemctl is-active --quiet tailscaled && ok "Tailscale service: active" || warn "Tailscale service: not active"; [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == "1" ]] && ok "IPv4 forwarding: enabled" || warn "IPv4 forwarding: disabled"; [[ "$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null)" == "1" ]] && ok "IPv6 forwarding: enabled" || warn "IPv6 forwarding: disabled"; "$TS_BIN" status >/dev/null 2>&1 && ok "Tailnet connection: active" || warn "Tailnet connection: unavailable"; has_exit_tag && ok "tag:exit: present" || warn "tag:exit: not present"; echo; public_ip; }
-mtu_test(){ ensure_ts || return 1; command -v ping >/dev/null 2>&1 || { warn "ping is not installed."; return 1; }; local target; read -r -p "Peer Tailscale IPv4 (e.g. 100.x.x.x): " target; [[ "$target" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { warn "Invalid Tailscale IPv4."; return 1; }; for size in 1472 1400 1300 1200; do ping -c 2 -W 2 -M do -s "$size" "$target" >/dev/null 2>&1 && ok "Payload $size bytes: OK" || warn "Payload $size bytes: failed"; done; }
+mtu_test(){ ensure_ts || return 1; command -v ping >/dev/null 2>&1 || { warn "ping is not installed."; return 1; }; local target; read -r -u "$INPUT_FD" -p "Peer Tailscale IPv4 (e.g. 100.x.x.x): " target; [[ "$target" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { warn "Invalid Tailscale IPv4."; return 1; }; for size in 1472 1400 1300 1200; do ping -c 2 -W 2 -M do -s "$size" "$target" >/dev/null 2>&1 && ok "Payload $size bytes: OK" || warn "Payload $size bytes: failed"; done; }
 dns_test(){ echo; info "=== DNS Test ==="; if command -v resolvectl >/dev/null 2>&1; then resolvectl status 2>/dev/null | head -n 40; else cat /etc/resolv.conf; fi; echo; for host in controlplane.tailscale.com tailscale.com; do getent ahosts "$host" >/dev/null 2>&1 && ok "$host resolves" || warn "$host does not resolve"; done; }
 status(){ join_if_needed || return 1; echo; info "=== Tailscale Status ==="; "$TS_BIN" status || true; echo; info "=== Tailscale IPs ==="; "$TS_BIN" ip -4 2>/dev/null || true; "$TS_BIN" ip -6 2>/dev/null || true; echo; info "=== Netcheck ==="; "$TS_BIN" netcheck 2>/dev/null || true; echo; info "=== Public IP ==="; public_ip; echo; info "=== Location ==="; location_info; }
 benchmark(){ join_if_needed || return 1; echo; info "=== VPS Quick Benchmark ==="; echo "Hostname    : $(hostname)"; public_ip; location_info; echo "Tailscale IPv4: $("$TS_BIN" ip -4 2>/dev/null || echo Unavailable)"; echo "Tailscale IPv6: $("$TS_BIN" ip -6 2>/dev/null || echo Unavailable)"; echo; info "Network"; "$TS_BIN" netcheck 2>/dev/null || true; echo; info "Peer connectivity"; ping_test || true; echo; info "Exit Node health"; health || true; }
-remove_node(){ require_root || return 1; ensure_ts || return 1; echo; read -r -p "Type YES to confirm: " confirm; [[ "$confirm" == "YES" ]] || { echo "Cancelled."; return 0; }; "$TS_BIN" logout || true; ok "Device logged out"; }
-uninstall_ts(){ require_root || return 1; echo; read -r -p "Type UNINSTALL to confirm: " confirm; [[ "$confirm" == "UNINSTALL" ]] || { echo "Cancelled."; return 0; }; "$TS_BIN" logout >/dev/null 2>&1 || true; if command -v apt-get >/dev/null 2>&1; then apt-get remove -y tailscale || true; elif command -v dnf >/dev/null 2>&1; then dnf remove -y tailscale || true; elif command -v yum >/dev/null 2>&1; then yum remove -y tailscale || true; fi; rm -f /etc/sysctl.d/99-tailscale-exit.conf; sysctl --system >/dev/null 2>&1 || true; ok "Tailscale removal completed"; }
-menu(){ clear 2>/dev/null || true; echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"; echo -e "${CYAN}║          Tailscale Full Setup            ║${NC}"; echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"; echo; echo "  1) Install Tailscale"; echo "  2) Setup Exit Node (IPv4 + IPv6)"; echo "  3) Enable Tailscale SSH"; echo "  4) Ping / Direct-DERP Test"; echo "  5) Network Benchmark (netcheck)"; echo "  6) Show Status + Public IP + Location"; echo "  7) Logout / Remove This Device"; echo "  8) Exit IP Test"; echo "  9) Exit Node Health Check"; echo " 10) MTU Test"; echo " 11) DNS Test"; echo " 12) Full VPS Benchmark"; echo " 13) Uninstall Tailscale"; echo " 14) Change Tailscale Hostname"; echo "  0) Exit"; echo; read -r -p "Select an option: " choice; case "$choice" in 1) install_ts ;; 2) setup_exit ;; 3) setup_ssh ;; 4) ping_test ;; 5) netcheck ;; 6) status ;; 7) remove_node ;; 8) exit_ip_test ;; 9) health ;; 10) mtu_test ;; 11) dns_test ;; 12) benchmark ;; 13) uninstall_ts ;; 14) set_hostname ;; 0) exit 0 ;; *) warn "Invalid option" ;; esac; echo; read -r -p "Press Enter to return to menu..." _; menu; }
+remove_node(){ require_root || return 1; ensure_ts || return 1; echo; read -r -u "$INPUT_FD" -p "Type YES to confirm: " confirm; [[ "$confirm" == "YES" ]] || { echo "Cancelled."; return 0; }; "$TS_BIN" logout || true; ok "Device logged out"; }
+uninstall_ts(){ require_root || return 1; echo; read -r -u "$INPUT_FD" -p "Type UNINSTALL to confirm: " confirm; [[ "$confirm" == "UNINSTALL" ]] || { echo "Cancelled."; return 0; }; "$TS_BIN" logout >/dev/null 2>&1 || true; if command -v apt-get >/dev/null 2>&1; then apt-get remove -y tailscale || true; elif command -v dnf >/dev/null 2>&1; then dnf remove -y tailscale || true; elif command -v yum >/dev/null 2>&1; then yum remove -y tailscale || true; fi; rm -f /etc/sysctl.d/99-tailscale-exit.conf; sysctl --system >/dev/null 2>&1 || true; ok "Tailscale removal completed"; }
+menu(){
+  while true; do
+    clear 2>/dev/null || true
+    echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║          Tailscale Full Setup            ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+    echo
+    echo "  1) Install Tailscale"
+    echo "  2) Setup Exit Node (IPv4 + IPv6)"
+    echo "  3) Enable Tailscale SSH"
+    echo "  4) Ping / Direct-DERP Test"
+    echo "  5) Network Benchmark (netcheck)"
+    echo "  6) Show Status + Public IP + Location"
+    echo "  7) Logout / Remove This Device"
+    echo "  8) Exit IP Test"
+    echo "  9) Exit Node Health Check"
+    echo " 10) MTU Test"
+    echo " 11) DNS Test"
+    echo " 12) Full VPS Benchmark"
+    echo " 13) Uninstall Tailscale"
+    echo " 14) Change Tailscale Hostname"
+    echo "  0) Exit"
+    echo
+
+    choice=''
+    if ! read -r -u "$INPUT_FD" -p "Select an option: " choice; then
+      echo
+      warn "No interactive input available; exiting."
+      return 0
+    fi
+
+    case "$choice" in
+      1) install_ts ;;
+      2) setup_exit ;;
+      3) setup_ssh ;;
+      4) ping_test ;;
+      5) netcheck ;;
+      6) status ;;
+      7) remove_node ;;
+      8) exit_ip_test ;;
+      9) health ;;
+      10) mtu_test ;;
+      11) dns_test ;;
+      12) benchmark ;;
+      13) uninstall_ts ;;
+      14) set_hostname ;;
+      0) return 0 ;;
+      *) warn "Invalid option" ;;
+    esac
+
+    echo
+    if ! read -r -u "$INPUT_FD" -p "Press Enter to return to menu..." _; then
+      return 0
+    fi
+  done
+}
 require_root || exit 1
 menu
