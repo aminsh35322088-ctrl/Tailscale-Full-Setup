@@ -6,8 +6,22 @@ Interactive **quick-install + setup + diagnostics toolkit** for Linux VPS and Wi
 
 ### 🐧 Linux
 
+Download the installer to a temporary file first, then run it. This avoids piping a live download directly into Bash, gives the download a timeout/retry policy, and keeps the interactive menu attached to your SSH terminal.
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/install.sh | sudo bash
+(
+  set -eu
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+
+  curl -fL --show-error --progress-bar \
+    --retry 3 --retry-delay 2 \
+    --connect-timeout 15 --max-time 120 \
+    -o "$installer" \
+    "https://raw.githubusercontent.com/aminsh35322088-ctrl/Tailscale-Full-Setup/main/install.sh"
+
+  sudo bash "$installer"
+)
 ```
 
 ### 🪟 Windows Server
@@ -35,11 +49,11 @@ Both Linux and Windows expose **Change Tailscale Hostname** as menu option `14`.
 ```text
   1) Install Tailscale
   2) Setup Exit Node (IPv4 + IPv6)
-  3) Tailscale SSH
-  4) Direct / DERP Ping
-  5) Network Benchmark (Netcheck)
-  6) Status + Public IP
-  7) Logout / Remove Device
+  3) Enable Tailscale SSH
+  4) Ping / Direct-DERP Test
+  5) Network Benchmark (netcheck)
+  6) Show Status + Public IP + Location
+  7) Logout / Remove This Device
   8) Exit IP Test
   9) Exit Node Health Check
  10) MTU Test
