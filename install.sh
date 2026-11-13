@@ -67,8 +67,21 @@ install_ts(){
     return 0
   fi
   command -v curl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 || { fail "curl is required and automatic installation is only supported on apt systems."; return 1; }; apt-get update -y && apt-get install -y curl; }
-  info "Installing Tailscale..."
-  curl -fsSL https://tailscale.com/install.sh | sh
+  info "Downloading Tailscale installer..."
+  if ! (
+    set -Eeuo pipefail
+    installer="$(mktemp)"
+    trap 'rm -f "$installer"' EXIT
+    curl -fL --show-error --progress-bar \
+      --retry 3 --retry-delay 2 \
+      --connect-timeout 15 --max-time 240 \
+      -o "$installer" \
+      https://tailscale.com/install.sh
+    sh "$installer"
+  ); then
+    fail "Tailscale download or installation failed. Check network access and try again."
+    return 1
+  fi
   export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
   hash -r 2>/dev/null || true
   if ! installed; then fail "Tailscale installer completed but the tailscale binary was not found."; return 1; fi
